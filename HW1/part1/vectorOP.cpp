@@ -67,43 +67,42 @@ void clampedExpVector(float* values, int* exponents, float* output, int N)
         // 1) 建立這一批有效 lane 的 active mask（處理尾端不足一組）
         int remain = N - i;
         __pp_mask mAll = (remain >= VECTOR_WIDTH)
-                       ? _pp_init_ones()
-                       : _pp_init_ones(remain);
+                       ? _pp_init_ones()        // 如果剩餘的元素數量 >= 向量寬度，mask 全部是 1
+                       : _pp_init_ones(remain); // 否則只開啟前 "remain" 個有效 lane
 
-        // 2) 向量載入 values/exponents
+        // 2) 向量載入 values 和 exponents
         __pp_vec_float vX;
         __pp_vec_int   vY;
-        _pp_vload_float(vX, values + i, mAll);
-        _pp_vload_int  (vY, exponents + i, mAll);
+        _pp_vload_float(vX, values + i, mAll);    // 只載入有效 lane
+        _pp_vload_int  (vY, exponents + i, mAll); // 只載入有效 lane
 
-        // 3) 冪次初始化：res = 1；cnt = y
+        // 3) 冪次初始化：res = 1；cnt = exponent
         __pp_vec_float vRes;
         __pp_vec_int   vCnt;
-        _pp_vset_float(vRes, 1.0f, mAll);     // 只在有效 lane 設 1.0
-        _pp_vmove_int (vCnt, vY, mAll);       // vCnt = vY（只寫有效 lane）
+        _pp_vset_float(vRes, 1.0f, mAll);     // 只在有效 lane 設為 1.0
+        _pp_vmove_int (vCnt, vY, mAll);       // 將 exponent 複製給每個 lane
 
         // 4) while (cnt > 0) { res *= x; cnt--; } 以 mask 控制仍需運算的 lane
         __pp_mask mCntPos;
-        _pp_vgt_int(mCntPos, vCnt, vZeroI, mAll);  // mCntPos = (cnt > 0) & mAll
+        _pp_vgt_int(mCntPos, vCnt, vZeroI, mAll);  // mCntPos = (cnt > 0) & mAll，檢查每個 lane 是否還需要運算
         while (_pp_cntbits(mCntPos) > 0) {
-            // res *= x   （僅在 mCntPos 的 lane 進行）
+            // 只對那些需要運算的 lane 做乘法：res *= x
             _pp_vmult_float(vRes, vRes, vX, mCntPos);
-            // cnt--
-            _pp_vsub_int  (vCnt, vCnt, vOneI, mCntPos);
-            // 更新：還有哪些 lane 的 cnt>0
-            _pp_vgt_int(mCntPos, vCnt, vZeroI, mAll);
+            // 遞減計數：cnt--
+            _pp_vsub_int(vCnt, vCnt, vOneI, mCntPos);
+            // 更新：哪些 lane 還需要運算
+            _pp_vgt_int(mCntPos, vCnt, vZeroI, mAll); // 重新判斷哪些 lane 的 cnt > 0
         }
 
-        // 5) clamp：若 res > 9.999999，覆寫成 9.999999（只在超標的 lane）
+        // 5) clamp：如果 res > 9.999999，將其設為 9.999999（只在超過的 lane 進行）
         __pp_mask mClamp;
-        _pp_vgt_float(mClamp, vRes, vLimit, mAll);     // mClamp = (vRes > vLimit) & mAll
-        _pp_vmove_float(vRes, vLimit, mClamp);
+        _pp_vgt_float(mClamp, vRes, vLimit, mAll);     // 產生超過 9.999999 的 mask
+        _pp_vmove_float(vRes, vLimit, mClamp);          // 將超過的 lane 設為 9.999999
 
-        // 6) 存回輸出（僅寫有效 lane）
+        // 6) 存回結果（只將有效的 lane 寫回）
         _pp_vstore_float(output + i, vRes, mAll);
     }
 }
-
 
 
 
