@@ -5,7 +5,7 @@ CC = gcc
 # -O3: 最佳化
 # -Wall -Wextra: 打開警告
 # -pthread: 使用 Pthreads
-CFLAGS = -O3 -Wall -Wextra -pthread
+CFLAGS = -O3 -Wall -Wextra -pthread -ffast-math
 
 # 目標執行檔
 TARGET = pi.out
