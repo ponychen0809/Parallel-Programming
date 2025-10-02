@@ -6,6 +6,7 @@ CC = gcc
 # -Wall -Wextra: 打開警告
 # -pthread: 使用 Pthreads
 CFLAGS = -O3 -Wall -Wextra -pthread -ffast-math
+#CFLAGS = -O3 -march=native -fno-math-errno -ffast-math -pthread
 
 # 目標執行檔
 TARGET = pi.out
