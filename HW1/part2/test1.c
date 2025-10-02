@@ -11,18 +11,18 @@
 // }
 
 
-#include "test.h"
+// #include "test.h"
 
-void test1(float *__restrict a, float *__restrict b, float *__restrict c, int N) {
-  __builtin_assume(N == 1024);
+// void test1(float *__restrict a, float *__restrict b, float *__restrict c, int N) {
+//   __builtin_assume(N == 1024);
 
-  a = (float *) __builtin_assume_aligned(a, 16);
-  b = (float *) __builtin_assume_aligned(b, 16);
-  c = (float *) __builtin_assume_aligned(c, 16);
+//   a = (float *) __builtin_assume_aligned(a, 16);
+//   b = (float *) __builtin_assume_aligned(b, 16);
+//   c = (float *) __builtin_assume_aligned(c, 16);
 
-  for (int i = 0; i < N; i++) {
-    for (int j = 0; j < N; j++) {
-      c[j] = a[j] + b[j];  
-    }
-  }
-}
+//   for (int i = 0; i < N; i++) {
+//     for (int j = 0; j < N; j++) {
+//       c[j] = a[j] + b[j];  
+//     }
+//   }
+// }
