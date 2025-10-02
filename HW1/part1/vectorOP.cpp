@@ -109,16 +109,44 @@ void clampedExpVector(float* values, int* exponents, float* output, int N)
 // returns the sum of all elements in values
 // You can assume N is a multiple of VECTOR_WIDTH
 // You can assume VECTOR_WIDTH is a power of 2
+// float arraySumVector(float *values, int N)
+// {
+
+//   //
+//   // PP STUDENTS TODO: Implement your vectorized version of arraySumSerial here
+//   //
+
+//   for (int i = 0; i < N; i += VECTOR_WIDTH)
+//   {
+//   }
+
+//   return 0.0;
+// }
+
+
 float arraySumVector(float *values, int N)
 {
+    // 用來儲存最終結果
+    __pp_vec_float vSum = _pp_vset_float(0.0f);  // 初始化 vSum，所有 lane 設為 0
 
-  //
-  // PP STUDENTS TODO: Implement your vectorized version of arraySumSerial here
-  //
+    for (int i = 0; i < N; i += VECTOR_WIDTH)
+    {
+        // 1) 計算本批有效的 lane mask
+        int remain = N - i;
+        __pp_mask mAll = (remain >= VECTOR_WIDTH) ? _pp_init_ones() : _pp_init_ones(remain);  // 修正 mask
 
-  for (int i = 0; i < N; i += VECTOR_WIDTH)
-  {
-  }
+        // 2) 載入本批資料（values[i..i+VECTOR_WIDTH-1]）
+        __pp_vec_float vX;
+        _pp_vload_float(vX, values + i, mAll);
 
-  return 0.0;
+        // 3) 加總：將這一批的 `values[i]` 加總
+        _pp_vadd_float(vSum, vSum, vX, mAll); // 向量加法，將本批的資料累加到 vSum
+    }
+
+    // 4) 結果：將所有 lane 的加總結果歸納到單一數值
+    float result = 0.0f;
+    _pp_vstore_float(&result, vSum, _pp_init_ones());  // 結果存回
+
+    return result;
 }
+
