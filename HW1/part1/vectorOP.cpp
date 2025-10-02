@@ -146,12 +146,14 @@ float arraySumVector(float *values, int N)
     // 4) 結果：將所有 lane 的加總結果歸納到單一數值
     float result = 0.0f;
 
-    // 創建 mask 變數
-    __pp_mask mAll = _pp_init_ones();  // 初始化 mask
+    // 創建有效的 mask
+    __pp_mask mAll = _pp_init_ones();  // 初始化 mask 作為左值
 
-    _pp_vstore_float(&result, vSum, mAll);  // 結果存回
+    // 正確地將結果存回
+    _pp_vstore_float(&result, vSum, mAll);  // 傳遞有效的 mask
 
     return result;
 }
+
 
 
