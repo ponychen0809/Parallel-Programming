@@ -126,34 +126,32 @@ void clampedExpVector(float* values, int* exponents, float* output, int N)
 
 float arraySumVector(float *values, int N)
 {
-    // 用來儲存最終結果
-    __pp_vec_float vSum = _pp_vset_float(0.0f);  // 初始化 vSum，所有 lane 設為 0
+  float totalSum = 0.f;
+  __pp_vec_float currentVals, haddVals, interleavedVals;
+  __pp_mask activeMask;
 
-    for (int i = 0; i < N; i += VECTOR_WIDTH)
-    {
-        // 1) 計算本批有效的 lane mask
-        int remain = N - i;
-        __pp_mask mAll = (remain >= VECTOR_WIDTH) ? _pp_init_ones() : _pp_init_ones(remain);  // 修正 mask
+  for (int i = 0; i < N; i += VECTOR_WIDTH)
+  {
+      // Initialize mask with all lanes active
+      activeMask = _pp_init_ones();
 
-        // 2) 載入本批資料（values[i..i+VECTOR_WIDTH-1]）
-        __pp_vec_float vX;
-        _pp_vload_float(vX, values + i, mAll);
+      // Load values from array into vector
+      _pp_vload_float(currentVals, values + i, activeMask);
 
-        // 3) 加總：將這一批的 `values[i]` 加總
-        _pp_vadd_float(vSum, vSum, vX, mAll); // 向量加法，將本批的資料累加到 vSum
-    }
+      // Perform horizontal addition
+      _pp_hadd_float(haddVals, currentVals);
 
-    // 4) 結果：將所有 lane 的加總結果歸納到單一數值
-    float result = 0.0f;
+      // Interleave even and odd lanes
+      _pp_interleave_float(interleavedVals, haddVals);
 
-    // 創建有效的 mask
-    __pp_mask mAll = _pp_init_ones();  // 初始化 mask 作為左值
+      // Sum the first half of the interleaved result
+      for (int j = 0; j < VECTOR_WIDTH / 2; j++)
+      {
+          totalSum += interleavedVals.value[j];
+      }
+  }
 
-    // 正確地將結果存回
-    _pp_vstore_float(&result, vSum, mAll);  // 傳遞有效的 mask
-
-    return result;
+  return totalSum;
 }
-
 
 
