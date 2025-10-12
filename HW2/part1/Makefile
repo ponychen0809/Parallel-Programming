@@ -1,5 +1,6 @@
 CC = gcc
-CFLAGS = -std=gnu11 -O3 -march=native -mtune=native -funroll-loops -DNDEBUG \
+CFLAGS = -std=gnu11 -Ofast -march=native -mtune=native -funroll-loops -flto \
+         -fomit-frame-pointer -fno-asynchronous-unwind-tables -DNDEBUG \
          -Wall -Wextra -pthread
 LDFLAGS = -pthread
 
