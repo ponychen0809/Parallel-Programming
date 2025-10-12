@@ -92,14 +92,7 @@ int main(int argc, char **argv) {
 
     pthread_t *ths = (pthread_t*)malloc(sizeof(pthread_t) * (size_t)num_threads);
     Task *tasks = NULL;
-#if defined(_ISOC11_SOURCE) || __STDC_VERSION__ >= 201112L
     tasks = aligned_alloc(64, sizeof(Task) * (size_t)num_threads);
-    if (!tasks) tasks = (Task*)malloc(sizeof(Task) * (size_t)num_threads);
-#else
-    if (posix_memalign((void**)&tasks, 64, sizeof(Task) * (size_t)num_threads) != 0)
-        tasks = (Task*)malloc(sizeof(Task) * (size_t)num_threads);
-#endif
-    if (!ths || !tasks) { perror("alloc"); return 1; }
 
     long long base = num_tosses / num_threads;
     int       rem  = (int)(num_tosses % num_threads);
