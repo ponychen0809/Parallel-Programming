@@ -1,11 +1,11 @@
 CC = gcc
-CFLAGS = -O3 -march=native -fno-math-errno -ffast-math -Wall -Wextra -pthread
-TARGET = pi.out
+CFLAGS = -std=gnu11 -O3 -march=native -mtune=native -funroll-loops -DNDEBUG \
+         -Wall -Wextra -pthread
+LDFLAGS = -pthread
 
-all: $(TARGET)
-
-$(TARGET): pi.c
-	$(CC) $(CFLAGS) -o $@ $<
+all: pi.out
+pi.out: pi.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
-	rm -f $(TARGET) *.o
+	rm -f pi.out
