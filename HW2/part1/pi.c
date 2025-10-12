@@ -40,9 +40,10 @@ static inline uint64_t mix64(uint64_t z) {
 static void* worker(void *arg) {
     Task *t = (Task*)arg;
     long long local_hits = 0;
+    long long n = t->tosses;
     uint64_t st = t->state;  // 放到暫存器，加速
 
-    for (long long i = 0; i < t->tosses; ++i) {
+    for (long long i = 0; i < n; ++i) {
         double x = u01(&st);
         double y = u01(&st);
         if (x*x + y*y <= 1.0) ++local_hits;
