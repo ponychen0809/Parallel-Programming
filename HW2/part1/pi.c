@@ -18,7 +18,7 @@ static inline uint64_t xs64(uint64_t *s) {
     uint64_t x = *s;
     x ^= x >> 12;
     x ^= x << 25;
-    x ^= x >> 27;
+    // x ^= x >> 27;
     *s = x;
     return x * 2685821657736338717ULL;
 }
