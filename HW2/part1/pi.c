@@ -1,5 +1,6 @@
 // pi.c — Monte Carlo π with Pthreads + xorshift64*
-// 整數幾何：兩次 RNG 產兩個點 (x1,y1),(x2,y2)；避免浮點轉換與 FPU 開銷
+// 整數幾何：每 2 次 RNG 產 2 個點；手動 unroll ×4；全部用 64-bit（更快）
+// 介面：./pi.out <threads:int> <tosses:long long>
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,7 +9,6 @@
 #include <time.h>
 #include <unistd.h>
 
-// ----- xorshift64* -----
 static inline __attribute__((always_inline))
 uint64_t xs64(uint64_t *s) {
     uint64_t x = *s;
@@ -19,7 +19,6 @@ uint64_t xs64(uint64_t *s) {
     return x * 2685821657736338717ULL;
 }
 
-// SplitMix64 風格種子混合（打散）
 static inline __attribute__((always_inline))
 uint64_t mix64(uint64_t z) {
     z += 0x9E3779B97F4A7C15ULL;
@@ -28,7 +27,7 @@ uint64_t mix64(uint64_t z) {
     return z ^ (z >> 31);
 }
 
-// 避免 false sharing：64B 對齊 + padding
+// 64B 對齊 + padding，避免 false sharing
 typedef struct {
     long long tosses;
     uint64_t  state;
@@ -36,41 +35,63 @@ typedef struct {
     char      pad[64];
 } __attribute__((aligned(64))) Task;
 
-// 每個 thread 的工作：整數幾何 + 兩點/迴圈
+static inline __attribute__((always_inline))
+uint64_t sqsum64(int32_t x, int32_t y) {
+    // (2^31-1)^2*2 < 2^63，因此 64-bit 足夠
+    int64_t X = (int64_t)x;
+    int64_t Y = (int64_t)y;
+    return (uint64_t)(X*X) + (uint64_t)(Y*Y);
+}
+
+// worker：整數幾何 + 2 RNG→2點；手動 unroll 每輪處理 4 點
 static void* worker(void *arg) {
     Task *t = (Task*)arg;
     long long n = t->tosses;
     long long hits = 0;
     uint64_t st = t->state;
 
-    // 半徑 R=2^31-1；用 128-bit 做加總比較避免邊界顧慮
-    const long long  R  = 2147483647LL;           // 2^31-1
-    const __int128   R2 = (__int128)R * R;
+    const int64_t  R  = 2147483647LL;                      // 2^31-1
+    const uint64_t R2 = (uint64_t)R * (uint64_t)R;
 
     long long i = 0;
-    for (; i + 1 < n; i += 2) {
-        // 2 次 RNG → 4 個 32-bit → 兩個點
+    // 主迴圈：一次吃 4 點（4 次 RNG → 8 個 32-bit → 4 個點）
+    for (; i + 3 < n; i += 4) {
         uint64_t r1 = xs64(&st);
         uint64_t r2 = xs64(&st);
+        uint64_t r3 = xs64(&st);
+        uint64_t r4 = xs64(&st);
 
         int32_t x1 = (int32_t)(r1 & 0xFFFFFFFFu);
         int32_t y1 = (int32_t)(r1 >> 32);
         int32_t x2 = (int32_t)(r2 & 0xFFFFFFFFu);
         int32_t y2 = (int32_t)(r2 >> 32);
+        int32_t x3 = (int32_t)(r3 & 0xFFFFFFFFu);
+        int32_t y3 = (int32_t)(r3 >> 32);
+        int32_t x4 = (int32_t)(r4 & 0xFFFFFFFFu);
+        int32_t y4 = (int32_t)(r4 >> 32);
 
-        __int128 s1 = (__int128)(int64_t)x1 * x1 + (__int128)(int64_t)y1 * y1;
-        __int128 s2 = (__int128)(int64_t)x2 * x2 + (__int128)(int64_t)y2 * y2;
-
-        hits += (s1 <= R2);
-        hits += (s2 <= R2);
+        hits += (sqsum64(x1,y1) <= R2);
+        hits += (sqsum64(x2,y2) <= R2);
+        hits += (sqsum64(x3,y3) <= R2);
+        hits += (sqsum64(x4,y4) <= R2);
     }
-    // 奇數收尾
+    // 收尾（剩 2~3 點）
+    for (; i + 1 < n; i += 2) {
+        uint64_t r1 = xs64(&st);
+        uint64_t r2 = xs64(&st);
+        int32_t x1 = (int32_t)(r1 & 0xFFFFFFFFu);
+        int32_t y1 = (int32_t)(r1 >> 32);
+        int32_t x2 = (int32_t)(r2 & 0xFFFFFFFFu);
+        int32_t y2 = (int32_t)(r2 >> 32);
+        hits += (sqsum64(x1,y1) <= R2);
+        hits += (sqsum64(x2,y2) <= R2);
+    }
+    // 單一剩餘
     if (i < n) {
         uint64_t r = xs64(&st);
         int32_t x = (int32_t)(r & 0xFFFFFFFFu);
         int32_t y = (int32_t)(r >> 32);
-        __int128 s = (__int128)(int64_t)x * x + (__int128)(int64_t)y * y;
-        hits += (s <= R2);
+        hits += (sqsum64(x,y) <= R2);
     }
 
     t->state = st;
@@ -91,13 +112,18 @@ int main(int argc, char **argv) {
     }
 
     pthread_t *ths = (pthread_t*)malloc(sizeof(pthread_t) * (size_t)num_threads);
-    Task *tasks = NULL;
-    tasks = aligned_alloc(64, sizeof(Task) * (size_t)num_threads);
+    if (!ths) { perror("alloc ths"); return 1; }
+
+    // C11 aligned_alloc：size 必須為對齊倍數；做個向上取整避免失敗
+    size_t need  = sizeof(Task) * (size_t)num_threads;
+    size_t bytes = (need + 63) & ~((size_t)63);
+    Task *tasks = (Task*)aligned_alloc(64, bytes);
+    if (!tasks) { perror("aligned_alloc"); return 1; }
 
     long long base = num_tosses / num_threads;
     int       rem  = (int)(num_tosses % num_threads);
 
-    // 基礎 seed：時間 + PID
+    // base seed：時間 + PID（再用 mix64 打散）
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     uint64_t base_seed = ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ ((uint64_t)getpid() << 16);
@@ -124,8 +150,7 @@ int main(int argc, char **argv) {
     free(ths);
     free(tasks);
 
-    // 估計 π：仍為 4 * hits / tosses（正方形內均勻拋點不變）
     double pi = (num_tosses > 0) ? (4.0 * (double)total_hits / (double)num_tosses) : 0.0;
-    printf("%.6f\n", pi);    // 僅數字 + 換行（評測要求）
+    printf("%.6f\n", pi);    // 只輸出數字 + 換行
     return 0;
 }
