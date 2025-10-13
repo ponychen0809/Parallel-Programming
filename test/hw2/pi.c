@@ -1,117 +1,125 @@
-// Single-thread Monte Carlo π (AVX2 vectorized, 8 points/batch)
-// - AVX2: 每回合同時判斷 8 個點是否在圓內
-// - LCG: 超快 64-bit 線性同餘 PRNG
-// - U[0,1) 轉換：用位元拼裝把 32-bit 整數變成 [1,2) 浮點後 -1.0f -> [0,1)
-// 介面：./pi_avx <num_tosses: long long>
-// 輸出：只印 π 的估計值（六位小數）+ 換行
+// pi.c -- Pthreads Monte Carlo Pi (LCG-64, MMIX constants)
+// Usage: ./pi.out <num_threads:int> <num_tosses:long long>
+// Output: one line with the estimated PI (e.g., 3.141592)
 
 #define _GNU_SOURCE
-#include <immintrin.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include <unistd.h>
+#include <errno.h>
 
-// ----------- 快速 PRNG：64-bit LCG（每次 1 乘 1 加） -----------
-static inline __attribute__((always_inline))
-uint64_t lcg64(uint64_t *s) {
-    *s = (*s * 6364136223846793005ULL + 1ULL);
-    return *s;
-}
+typedef unsigned long long ull;
 
-// ----------- 混 seed（SplitMix64 風格） -----------
-static inline __attribute__((always_inline))
-uint64_t mix64(uint64_t z) {
-    z += 0x9E3779B97F4A7C15ULL;
+/* -------- splitmix64: 用於播種（高擾動，避免相關性） -------- */
+static inline uint64_t splitmix64(uint64_t *x) {
+    uint64_t z = (*x += 0x9E3779B97F4A7C15ULL);
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
     return z ^ (z >> 31);
 }
 
-// ----------- 產生 8 個 32-bit 隨機整數（打包成 __m256i） -----------
-static inline __attribute__((always_inline))
-__m256i lcg8_u32(uint64_t *state) {
-    alignas(32) uint32_t buf[8];
-    // 逐一前進 LCG，填入 8 個 32-bit（取低 32 位即可）
-    for (int i = 0; i < 8; ++i) buf[i] = (uint32_t)lcg64(state);
-    return _mm256_load_si256((const __m256i*)buf);
+/* -------- 64-bit LCG (mod 2^64) — MMIX constants --------
+   X_{n+1} = a * X_n + c (mod 2^64)
+   a = 6364136223846793005, c = 1442695040888963407
+   注意：低位統計性差，所以轉 double 時取高 53 bits。
+*/
+typedef struct { uint64_t s; } lcg64_state;
+
+static inline uint64_t lcg64_next(lcg64_state *st) {
+    st->s = st->s * 6364136223846793005ULL + 1442695040888963407ULL;
+    return st->s;
 }
 
-// ----------- 把 8 個 uint32 映射為 U[0,1) 的 float -----------
-static inline __attribute__((always_inline))
-__m256 u01_from_u32(__m256i u32) {
-    // 將 u32 的低 23 位當 mantissa，和 0x3F800000 (1.0f 的 exponent) OR
-    // 得到 [1,2) 的 IEEE-754 float，再減 1.0f -> [0,1)
-    const __m256i mant_mask = _mm256_set1_epi32(0x007FFFFF);
-    const __m256i one_exp   = _mm256_set1_epi32(0x3F800000);
-    __m256i mant = _mm256_and_si256(u32, mant_mask);
-    __m256i bits = _mm256_or_si256(mant, one_exp);
-    __m256  f    = _mm256_castsi256_ps(bits);
-    return _mm256_sub_ps(f, _mm256_set1_ps(1.0f));
+/* 轉 [0,1) double：取高 53 bits / 2^53，避開低位相關性 */
+static inline double u01_double_lcg(lcg64_state *st) {
+    return (lcg64_next(st) >> 11) * (1.0 / 9007199254740992.0);
 }
 
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <num_tosses:long long>\n", argv[0]);
+typedef struct {
+    ull tosses;
+    ull local_hits;
+    lcg64_state rng;
+} Task;
+
+void* worker(void* arg) {
+    Task* t = (Task*)arg;
+    lcg64_state st = t->rng;
+    ull hits = 0;
+
+    // 小幅迴圈展開以降低分支與函式呼叫開銷
+    ull i = 0, n = t->tosses;
+    for (; i + 7 < n; i += 8) {
+        double x0 = u01_double_lcg(&st), y0 = u01_double_lcg(&st);
+        double x1 = u01_double_lcg(&st), y1 = u01_double_lcg(&st);
+        double x2 = u01_double_lcg(&st), y2 = u01_double_lcg(&st);
+        double x3 = u01_double_lcg(&st), y3 = u01_double_lcg(&st);
+        if (x0*x0 + y0*y0 <= 1.0) ++hits;
+        if (x1*x1 + y1*y1 <= 1.0) ++hits;
+        if (x2*x2 + y2*y2 <= 1.0) ++hits;
+        if (x3*x3 + y3*y3 <= 1.0) ++hits;
+
+        double x4 = u01_double_lcg(&st), y4 = u01_double_lcg(&st);
+        double x5 = u01_double_lcg(&st), y5 = u01_double_lcg(&st);
+        double x6 = u01_double_lcg(&st), y6 = u01_double_lcg(&st);
+        double x7 = u01_double_lcg(&st), y7 = u01_double_lcg(&st);
+        if (x4*x4 + y4*y4 <= 1.0) ++hits;
+        if (x5*x5 + y5*y5 <= 1.0) ++hits;
+        if (x6*x6 + y6*y6 <= 1.0) ++hits;
+        if (x7*x7 + y7*y7 <= 1.0) ++hits;
+    }
+    for (; i < n; ++i) {
+        double x = u01_double_lcg(&st);
+        double y = u01_double_lcg(&st);
+        if (x*x + y*y <= 1.0) ++hits;
+    }
+
+    t->local_hits = hits;
+    t->rng = st; // 保持嚴謹（非必要）
+    return NULL;
+}
+
+int main(int argc, char** argv) {
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <num_threads:int> <num_tosses:long long>\n", argv[0]);
         return 1;
     }
-    long long num_tosses = atoll(argv[1]);
-    if (num_tosses < 0) { fprintf(stderr, "Invalid num_tosses.\n"); return 1; }
-    if (num_tosses == 0) { printf("0.000000\n"); return 0; }
+    int num_threads = atoi(argv[1]);
+    if (num_threads <= 0) { fprintf(stderr, "num_threads must be > 0\n"); return 1; }
 
-    // 準備 seed（時間 + PID -> mix）
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    uint64_t base_seed = ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ ((uint64_t)getpid() << 16);
-    uint64_t state = mix64(base_seed);
-    if (state == 0) state = 0x106689D45497FDB5ULL;
+    char* endp = NULL;
+    errno = 0;
+    ull total_tosses = strtoull(argv[2], &endp, 10);
+    if (errno || endp == argv[2]) { fprintf(stderr, "invalid num_tosses\n"); return 1; }
 
-    const long long batches = num_tosses / 8; // 主要向量化路徑：一次 8 點
-    const int       tail    = (int)(num_tosses % 8);
+    pthread_t* th = (pthread_t*)malloc(sizeof(pthread_t) * num_threads);
+    Task* tasks    = (Task*)malloc(sizeof(Task) * num_threads);
 
-    long long hits = 0;
+    // 均分 tosses
+    ull base = total_tosses / (ull)num_threads;
+    ull rem  = total_tosses % (ull)num_threads;
 
-    // 常數向量
-    const __m256 one = _mm256_set1_ps(1.0f);
-
-    // --- 向量化主迴圈：每批 8 個點 ---
-    for (long long b = 0; b < batches; ++b) {
-        // 產 8 個 U[0,1) 的 x、y
-        __m256i ux = lcg8_u32(&state);
-        __m256i uy = lcg8_u32(&state);
-        __m256  x  = u01_from_u32(ux);
-        __m256  y  = u01_from_u32(uy);
-
-        // d = x*x + y*y
-        __m256 xx = _mm256_mul_ps(x, x);
-        __m256 yy = _mm256_mul_ps(y, y);
-        __m256 d  = _mm256_add_ps(xx, yy);
-
-        // 比較 d <= 1.0f → 8-bit mask（bit=1 表示在圓內）
-        __m256 cmp = _mm256_cmp_ps(d, one, _CMP_LE_OS);
-        int mask   = _mm256_movemask_ps(cmp);
-
-        // 計算 mask 內 1 的個數（0..8）
-        hits += __builtin_popcount((unsigned)mask);
+    // 每執行緒獨立 seed（用 splitmix64 從全域種子衍生）
+    uint64_t g = (uint64_t)time(NULL) ^ 0xA5A5A5A5A5A5A5A5ULL;
+    for (int i = 0; i < num_threads; ++i) {
+        tasks[i].tosses = base + (i < (int)rem ? 1 : 0);
+        uint64_t mix = (uint64_t)i * 0x9E3779B97F4A7C15ULL ^ g;
+        tasks[i].rng.s = splitmix64(&mix);
+        tasks[i].local_hits = 0;
+        pthread_create(&th[i], NULL, worker, &tasks[i]);
     }
 
-    // --- 尾端（不足 8 個）的標量處理（沿用同一 RNG & 轉換方法） ---
-    for (int i = 0; i < tail; ++i) {
-        uint32_t rx = (uint32_t)lcg64(&state);
-        uint32_t ry = (uint32_t)lcg64(&state);
-
-        // 單筆用同樣的位元拼裝法
-        uint32_t bx = (rx & 0x007FFFFF) | 0x3F800000;
-        uint32_t by = (ry & 0x007FFFFF) | 0x3F800000;
-        float fx = *((float*)&bx) - 1.0f;  // U[0,1)
-        float fy = *((float*)&by) - 1.0f;  // U[0,1)
-
-        float d = fx*fx + fy*fy;
-        hits += (d <= 1.0f);
+    ull hits = 0;
+    for (int i = 0; i < num_threads; ++i) {
+        pthread_join(th[i], NULL);
+        hits += tasks[i].local_hits;
     }
 
-    double pi = 4.0 * (double)hits / (double)num_tosses;
-    printf("%.6f\n", pi);
+    free(th);
+    free(tasks);
+
+    double pi = 4.0 * (double)hits / (double)total_tosses;
+    printf("%.6f\n", pi); // 只印數字與換行
     return 0;
 }
