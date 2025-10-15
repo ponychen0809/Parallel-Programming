@@ -32,25 +32,33 @@ extern void mandelbrot_serial(float x0,
 // Thread entrypoint.
 void worker_thread_start(WorkerArgs *const args)
 {
-    const int tid = args->threadId;
-    const int nth = args->numThreads;
+    double t0 = CycleTimer::current_seconds();
+
+    const int tid = args->threadId;         // 第幾個執行緒
+    const int nth = args->numThreads;       // 總執行緒數
     const int H   = static_cast<int>(args->height);
 
-    const int CHUNK = 8; // 可嘗試 4/8/16 看速度
+    // 依列(row)等分，前面 rem 個執行緒各多拿 1 列
+    const int base = (nth > 0) ? (H / nth) : H;
+    const int rem  = (nth > 0) ? (H % nth) : 0;
 
-    for (int row0 = tid * CHUNK; row0 < H; row0 += CHUNK * nth) {
-        const int rows = std::min(CHUNK, H - row0);
-        mandelbrot_serial(
-            args->x0, args->y0, args->x1, args->y1,
-            static_cast<int>(args->width),
-            static_cast<int>(args->height),
-            row0, rows,
-            args->maxIterations,
-            args->output
-        );
-    }
+    const int my_rows  = base + (tid < rem ? 1 : 0);
+    const int my_start = tid * base + (tid < rem ? tid : rem);
+
+    if (my_rows <= 0) return;  // 當執行緒比高度多時，部分 thread 無工作
+
+    // 直接呼叫序列版計算自己負責的列區塊
+    mandelbrot_serial(
+        args->x0, args->y0, args->x1, args->y1,
+        static_cast<int>(args->width),
+        static_cast<int>(args->height),
+        my_start, my_rows,
+        args->maxIterations,
+        args->output  // 共享同一塊 output；函式內用 j*width+i，全域索引，不會衝突
+    );
+    double t1 = CycleTimer::current_seconds();
+printf("[thread %d] %.3f ms\n", args->threadId, (t1-t0)*1000.0);
 }
-
 
 
 //
