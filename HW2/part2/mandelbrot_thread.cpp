@@ -33,7 +33,7 @@ extern void mandelbrot_serial(float x0,
 // Thread entrypoint.
 void worker_thread_start(WorkerArgs *const args)
 {
-    double t0 = CycleTimer::current_seconds();
+    // double t0 = CycleTimer::current_seconds();
 
     const int tid = args->threadId;         // 第幾個執行緒
     const int nth = args->numThreads;       // 總執行緒數
@@ -57,8 +57,8 @@ void worker_thread_start(WorkerArgs *const args)
         args->maxIterations,
         args->output  // 共享同一塊 output；函式內用 j*width+i，全域索引，不會衝突
     );
-    double t1 = CycleTimer::current_seconds();
-printf("[thread %d] %.3f ms\n", args->threadId, (t1-t0)*1000.0);
+//     double t1 = CycleTimer::current_seconds();
+// printf("[thread %d] %.3f ms\n", args->threadId, (t1-t0)*1000.0);
 }
 
 
