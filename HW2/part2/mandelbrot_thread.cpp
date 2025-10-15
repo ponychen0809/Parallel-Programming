@@ -32,17 +32,30 @@ extern void mandelbrot_serial(float x0,
 // Thread entrypoint.
 void worker_thread_start(WorkerArgs *const args)
 {
+    const int tid = args->threadId;         // 第幾個執行緒
+    const int nth = args->numThreads;       // 總執行緒數
+    const int H   = static_cast<int>(args->height);
 
-    // TODO FOR PP STUDENTS: Implement the body of the worker
-    // thread here. Each thread could make a call to mandelbrot_serial()
-    // to compute a part of the output image. For example, in a
-    // program that uses two threads, thread 0 could compute the top
-    // half of the image and thread 1 could compute the bottom half.
-    // Of course, you can copy mandelbrot_serial() to this file and
-    // modify it to pursue a better performance.
+    // 依列(row)等分，前面 rem 個執行緒各多拿 1 列
+    const int base = (nth > 0) ? (H / nth) : H;
+    const int rem  = (nth > 0) ? (H % nth) : 0;
 
-    printf("Hello world from thread %d\n", args->threadId);
+    const int my_rows  = base + (tid < rem ? 1 : 0);
+    const int my_start = tid * base + (tid < rem ? tid : rem);
+
+    if (my_rows <= 0) return;  // 當執行緒比高度多時，部分 thread 無工作
+
+    // 直接呼叫序列版計算自己負責的列區塊
+    mandelbrot_serial(
+        args->x0, args->y0, args->x1, args->y1,
+        static_cast<int>(args->width),
+        static_cast<int>(args->height),
+        my_start, my_rows,
+        args->maxIterations,
+        args->output  // 共享同一塊 output；函式內用 j*width+i，全域索引，不會衝突
+    );
 }
+
 
 //
 // mandelbrot_thread --
