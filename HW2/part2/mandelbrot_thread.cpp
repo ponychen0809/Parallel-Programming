@@ -2,7 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <thread>
-#include "common/cycletimer.h"
+#include "common/cycle_timer.h"
 
 struct WorkerArgs
 {
