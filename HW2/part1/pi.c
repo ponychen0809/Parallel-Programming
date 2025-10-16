@@ -1,125 +1,145 @@
-// pi.c -- Pthreads Monte Carlo Pi (LCG-64, MMIX constants)
-// Usage: ./pi.out <num_threads:int> <num_tosses:long long>
-// Output: one line with the estimated PI (e.g., 3.141592)
-
 #define _GNU_SOURCE
-#include <pthread.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <pthread.h>
 #include <time.h>
-#include <errno.h>
+#include <unistd.h>
 
-typedef unsigned long long ull;
 
-/* -------- splitmix64: 用於播種（高擾動，避免相關性） -------- */
-static inline uint64_t splitmix64(uint64_t *x) {
-    uint64_t z = (*x += 0x9E3779B97F4A7C15ULL);
+static inline __attribute__((always_inline, hot))
+uint64_t fast_lcg(uint64_t *s) {
+    *s = (*s * 6364136223846793005ULL + 1ULL);  // 1 mul + 1 add
+    return *s;
+}
+
+static inline __attribute__((always_inline, hot))
+uint64_t mix64(uint64_t z) {
+    z += 0x9E3779B97F4A7C15ULL;
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
     return z ^ (z >> 31);
 }
 
-/* -------- 64-bit LCG (mod 2^64) — MMIX constants --------
-   X_{n+1} = a * X_n + c (mod 2^64)
-   a = 6364136223846793005, c = 1442695040888963407
-   注意：低位統計性差，所以轉 double 時取高 53 bits。
-*/
-typedef struct { uint64_t s; } lcg64_state;
-
-static inline uint64_t lcg64_next(lcg64_state *st) {
-    st->s = st->s * 6364136223846793005ULL + 1442695040888963407ULL;
-    return st->s;
-}
-
-/* 轉 [0,1) double：取高 53 bits / 2^53，避開低位相關性 */
-static inline double u01_double_lcg(lcg64_state *st) {
-    return (lcg64_next(st) >> 11) * (1.0 / 9007199254740992.0);
-}
-
 typedef struct {
-    ull tosses;
-    ull local_hits;
-    lcg64_state rng;
-} Task;
+    long long tosses;
+    uint64_t  state;
+    long long hits;
+    char      pad[64];
+} __attribute__((aligned(64))) Task;
 
-void* worker(void* arg) {
-    Task* t = (Task*)arg;
-    lcg64_state st = t->rng;
-    ull hits = 0;
+static inline __attribute__((always_inline, hot))
+uint64_t sqsum64(int32_t x, int32_t y) {
+    int64_t X = (int64_t)x, Y = (int64_t)y;
+    return (uint64_t)(X*X) + (uint64_t)(Y*Y);
+}
 
-    // 小幅迴圈展開以降低分支與函式呼叫開銷
-    ull i = 0, n = t->tosses;
+static void* worker(void *arg) {
+    Task *t = (Task*)arg;
+    long long n = t->tosses;
+    long long hits = 0;
+    uint64_t st = t->state;
+
+    const int64_t  R  = 2147483647LL;                 // 2^31-1
+    const uint64_t R2 = (uint64_t)R * (uint64_t)R;
+
+    long long i = 0;
     for (; i + 7 < n; i += 8) {
-        double x0 = u01_double_lcg(&st), y0 = u01_double_lcg(&st);
-        double x1 = u01_double_lcg(&st), y1 = u01_double_lcg(&st);
-        double x2 = u01_double_lcg(&st), y2 = u01_double_lcg(&st);
-        double x3 = u01_double_lcg(&st), y3 = u01_double_lcg(&st);
-        if (x0*x0 + y0*y0 <= 1.0) ++hits;
-        if (x1*x1 + y1*y1 <= 1.0) ++hits;
-        if (x2*x2 + y2*y2 <= 1.0) ++hits;
-        if (x3*x3 + y3*y3 <= 1.0) ++hits;
+        uint64_t r1 = fast_lcg(&st), r2 = fast_lcg(&st);
+        uint64_t r3 = fast_lcg(&st), r4 = fast_lcg(&st);
+        uint64_t r5 = fast_lcg(&st), r6 = fast_lcg(&st);
+        uint64_t r7 = fast_lcg(&st), r8 = fast_lcg(&st);
 
-        double x4 = u01_double_lcg(&st), y4 = u01_double_lcg(&st);
-        double x5 = u01_double_lcg(&st), y5 = u01_double_lcg(&st);
-        double x6 = u01_double_lcg(&st), y6 = u01_double_lcg(&st);
-        double x7 = u01_double_lcg(&st), y7 = u01_double_lcg(&st);
-        if (x4*x4 + y4*y4 <= 1.0) ++hits;
-        if (x5*x5 + y5*y5 <= 1.0) ++hits;
-        if (x6*x6 + y6*y6 <= 1.0) ++hits;
-        if (x7*x7 + y7*y7 <= 1.0) ++hits;
-    }
-    for (; i < n; ++i) {
-        double x = u01_double_lcg(&st);
-        double y = u01_double_lcg(&st);
-        if (x*x + y*y <= 1.0) ++hits;
+        int32_t x1 = (int32_t)(r1), y1 = (int32_t)(r1 >> 32);
+        int32_t x2 = (int32_t)(r2), y2 = (int32_t)(r2 >> 32);
+        int32_t x3 = (int32_t)(r3), y3 = (int32_t)(r3 >> 32);
+        int32_t x4 = (int32_t)(r4), y4 = (int32_t)(r4 >> 32);
+        int32_t x5 = (int32_t)(r5), y5 = (int32_t)(r5 >> 32);
+        int32_t x6 = (int32_t)(r6), y6 = (int32_t)(r6 >> 32);
+        int32_t x7 = (int32_t)(r7), y7 = (int32_t)(r7 >> 32);
+        int32_t x8 = (int32_t)(r8), y8 = (int32_t)(r8 >> 32);
+
+        hits += (sqsum64(x1,y1) <= R2);
+        hits += (sqsum64(x2,y2) <= R2);
+        hits += (sqsum64(x3,y3) <= R2);
+        hits += (sqsum64(x4,y4) <= R2);
+        hits += (sqsum64(x5,y5) <= R2);
+        hits += (sqsum64(x6,y6) <= R2);
+        hits += (sqsum64(x7,y7) <= R2);
+        hits += (sqsum64(x8,y8) <= R2);
     }
 
-    t->local_hits = hits;
-    t->rng = st; // 保持嚴謹（非必要）
+    for (; i + 1 < n; i += 2) {
+        uint64_t r1 = fast_lcg(&st), r2 = fast_lcg(&st);
+        int32_t x1 = (int32_t)(r1), y1 = (int32_t)(r1 >> 32);
+        int32_t x2 = (int32_t)(r2), y2 = (int32_t)(r2 >> 32);
+        hits += (sqsum64(x1,y1) <= R2);
+        hits += (sqsum64(x2,y2) <= R2);
+    }
+
+    if (i < n) {
+        uint64_t r = fast_lcg(&st);
+        int32_t x = (int32_t)(r), y = (int32_t)(r >> 32);
+        hits += (sqsum64(x,y) <= R2);
+    }
+
+    t->state = st;
+    t->hits  = hits;
     return NULL;
 }
 
-int main(int argc, char** argv) {
+
+int main(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <num_threads:int> <num_tosses:long long>\n", argv[0]);
         return 1;
     }
-    int num_threads = atoi(argv[1]);
-    if (num_threads <= 0) { fprintf(stderr, "num_threads must be > 0\n"); return 1; }
-
-    char* endp = NULL;
-    errno = 0;
-    ull total_tosses = strtoull(argv[2], &endp, 10);
-    if (errno || endp == argv[2]) { fprintf(stderr, "invalid num_tosses\n"); return 1; }
-
-    pthread_t* th = (pthread_t*)malloc(sizeof(pthread_t) * num_threads);
-    Task* tasks    = (Task*)malloc(sizeof(Task) * num_threads);
-
-    // 均分 tosses
-    ull base = total_tosses / (ull)num_threads;
-    ull rem  = total_tosses % (ull)num_threads;
-
-    // 每執行緒獨立 seed（用 splitmix64 從全域種子衍生）
-    uint64_t g = (uint64_t)time(NULL) ^ 0xA5A5A5A5A5A5A5A5ULL;
-    for (int i = 0; i < num_threads; ++i) {
-        tasks[i].tosses = base + (i < (int)rem ? 1 : 0);
-        uint64_t mix = (uint64_t)i * 0x9E3779B97F4A7C15ULL ^ g;
-        tasks[i].rng.s = splitmix64(&mix);
-        tasks[i].local_hits = 0;
-        pthread_create(&th[i], NULL, worker, &tasks[i]);
+    int        num_threads = atoi(argv[1]);
+    long long  num_tosses  = atoll(argv[2]);
+    if (num_threads <= 0 || num_tosses < 0) {
+        fprintf(stderr, "Invalid arguments.\n");
+        return 1;
     }
 
-    ull hits = 0;
+    pthread_t *ths = (pthread_t*)malloc(sizeof(pthread_t) * (size_t)num_threads);
+    if (!ths) { perror("alloc ths"); return 1; }
+
+    size_t need  = sizeof(Task) * (size_t)num_threads;
+    size_t bytes = (need + 63) & ~((size_t)63);
+    Task *tasks = (Task*)aligned_alloc(64, bytes);
+    if (!tasks) { perror("aligned_alloc"); return 1; }
+
+    long long base = num_tosses / num_threads;
+    int       rem  = (int)(num_tosses % num_threads);
+
+    // struct timespec ts;
+    // clock_gettime(CLOCK_REALTIME, &ts);
+    // uint64_t base_seed = ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ ((uint64_t)getpid() << 16);
+    uint64_t base_seed = getpid();
+
     for (int i = 0; i < num_threads; ++i) {
-        pthread_join(th[i], NULL);
-        hits += tasks[i].local_hits;
+        tasks[i].tosses = base + (i < rem ? 1 : 0);
+        uint64_t si = mix64(base_seed ^ (0x9E3779B97F4A7C15ULL * (uint64_t)(i + 1)));
+        if (si == 0) si = 0x106689D45497FDB5ULL;   // LCG 狀態不可為 0
+        tasks[i].state = si;
+        tasks[i].hits  = 0;
+
+        if (pthread_create(&ths[i], NULL, worker, &tasks[i]) != 0) {
+            perror("pthread_create");
+            return 1;
+        }
     }
 
-    free(th);
+    long long total_hits = 0;
+    for (int i = 0; i < num_threads; ++i) {
+        pthread_join(ths[i], NULL);
+        total_hits += tasks[i].hits;
+    }
+
+    free(ths);
     free(tasks);
 
-    double pi = 4.0 * (double)hits / (double)total_tosses;
-    printf("%.6f\n", pi); // 只印數字與換行
+    double pi = (num_tosses > 0) ? (4.0 * (double)total_hits / (double)num_tosses) : 0.0;
+    printf("%.6f\n", pi);    
     return 0;
 }
