@@ -1,5 +1,5 @@
-// pi.c — Monte Carlo π with Pthreads + super-fast LCG RNG (PID seed)
-// 整數幾何；LCG；unroll×8；cacheline padding；無任何條件編譯
+// pi.c — Monte Carlo π with Pthreads + super-fast xorshift64 RNG (PID seed)
+// 重點：整數幾何；xorshift64；unroll×8；cacheline padding；無任何條件編譯
 // 建議編譯：-O3 -march=native -flto -pthread
 
 #define _GNU_SOURCE
@@ -10,13 +10,18 @@
 #include <unistd.h>
 #include <errno.h>
 
-// -------- LCG 與 mix64（熱區） -----------------------------------------
+/* -------- 極速 RNG：xorshift64（無乘法，品質較 LCG 稍差但更快） -------- */
 static inline __attribute__((always_inline, hot))
-uint64_t fast_lcg(uint64_t *s) {
-    *s = (*s * 6364136223846793005ULL + 1ULL);  // 1 mul + 1 add
-    return *s;
+uint64_t fast_rng(uint64_t *s) {
+    uint64_t x = *s ? *s : 0x9E3779B97F4A7C15ULL; // 避免 0 狀態
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *s = x;
+    return x;
 }
 
+/* -------- split & mix：讓不同執行緒種子分散 -------- */
 static inline __attribute__((always_inline, hot))
 uint64_t mix64(uint64_t z) {
     z += 0x9E3779B97F4A7C15ULL;
@@ -25,7 +30,7 @@ uint64_t mix64(uint64_t z) {
     return z ^ (z >> 31);
 }
 
-// -------- 對齊配置（posix_memalign；更可攜） ---------------------------
+/* -------- 對齊配置（posix_memalign） -------- */
 static void* alloc_aligned(size_t alignment, size_t size) {
     void *p = NULL;
     int rc = posix_memalign(&p, alignment, size);
@@ -33,7 +38,7 @@ static void* alloc_aligned(size_t alignment, size_t size) {
     return p;
 }
 
-// -------- 任務結構：避免 false sharing ---------------------------------
+/* -------- 任務結構：避免 false sharing -------- */
 typedef struct {
     long long tosses;
     uint64_t  state;
@@ -41,14 +46,14 @@ typedef struct {
     char      pad[64];
 } __attribute__((aligned(64))) Task;
 
-// -------- x^2 + y^2（64-bit） ------------------------------------------
+/* -------- x^2 + y^2（64-bit） -------- */
 static inline __attribute__((always_inline, hot))
 uint64_t sqsum64(int32_t x, int32_t y) {
     int64_t X = (int64_t)x, Y = (int64_t)y;
     return (uint64_t)(X*X) + (uint64_t)(Y*Y);
 }
 
-// -------- worker（熱區迴圈：unroll × 8） -------------------------------
+/* -------- worker：unroll × 8 -------- */
 static void* worker(void *arg) {
     Task * __restrict t = (Task*)arg;
     long long n = t->tosses;
@@ -60,10 +65,10 @@ static void* worker(void *arg) {
 
     long long n8 = n >> 3;
     for (long long k = 0; k < n8; ++k) {
-        uint64_t r1 = fast_lcg(&st), r2 = fast_lcg(&st);
-        uint64_t r3 = fast_lcg(&st), r4 = fast_lcg(&st);
-        uint64_t r5 = fast_lcg(&st), r6 = fast_lcg(&st);
-        uint64_t r7 = fast_lcg(&st), r8 = fast_lcg(&st);
+        uint64_t r1 = fast_rng(&st), r2 = fast_rng(&st);
+        uint64_t r3 = fast_rng(&st), r4 = fast_rng(&st);
+        uint64_t r5 = fast_rng(&st), r6 = fast_rng(&st);
+        uint64_t r7 = fast_rng(&st), r8 = fast_rng(&st);
 
         int32_t x1 = (int32_t)(r1), y1 = (int32_t)(r1 >> 32);
         int32_t x2 = (int32_t)(r2), y2 = (int32_t)(r2 >> 32);
@@ -86,7 +91,7 @@ static void* worker(void *arg) {
 
     int rem = (int)(n & 7);
     while (rem >= 2) {
-        uint64_t r1 = fast_lcg(&st), r2 = fast_lcg(&st);
+        uint64_t r1 = fast_rng(&st), r2 = fast_rng(&st);
         int32_t x1 = (int32_t)(r1), y1 = (int32_t)(r1 >> 32);
         int32_t x2 = (int32_t)(r2), y2 = (int32_t)(r2 >> 32);
         hits += (sqsum64(x1,y1) <= R2);
@@ -94,7 +99,7 @@ static void* worker(void *arg) {
         rem -= 2;
     }
     if (rem == 1) {
-        uint64_t r = fast_lcg(&st);
+        uint64_t r = fast_rng(&st);
         int32_t x = (int32_t)(r), y = (int32_t)(r >> 32);
         hits += (sqsum64(x,y) <= R2);
     }
@@ -104,7 +109,7 @@ static void* worker(void *arg) {
     return NULL;
 }
 
-// -------- main ---------------------------------------------------------
+/* -------- main -------- */
 int main(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <num_threads:int> <num_tosses:long long>\n", argv[0]);
@@ -128,13 +133,13 @@ int main(int argc, char **argv) {
     long long base = num_tosses / num_threads;
     int       rem  = (int)(num_tosses % num_threads);
 
-    // 最省時隨機種子：僅使用 getpid()；每執行緒再混 lane 序避免同種子
+    // 最省時：僅用 PID 當基礎種子；每執行緒經 mix 做 decorrelate
     uint64_t base_seed = (uint64_t)getpid();
 
     for (int i = 0; i < num_threads; ++i) {
         tasks[i].tosses = base + (i < rem ? 1 : 0);
         uint64_t si = mix64(base_seed ^ (0x9E3779B97F4A7C15ULL * (uint64_t)(i + 1)));
-        if (si == 0) si = 0x106689D45497FDB5ULL;   // LCG 狀態不可為 0
+        if (si == 0) si = 0x106689D45497FDB5ULL;   // 狀態避免為 0
         tasks[i].state = si;
         tasks[i].hits  = 0;
 
