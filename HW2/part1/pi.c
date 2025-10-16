@@ -9,12 +9,11 @@
 /* -------- 極速 RNG：xorshift64（無乘法，品質較 LCG 稍差但更快） -------- */
 static inline __attribute__((always_inline, hot))
 uint64_t fast_rng(uint64_t *s) {
-    uint64_t x = *s ? *s : 0x9E3779B97F4A7C15ULL; // 避免 0 狀態
+    uint64_t x = *s; // 避免 0 狀態
     x ^= x << 13;
     x ^= x >> 7;
     x ^= x << 17;
     *s = x;
-    // *s = *s +112312312312312;
     return *s;
 }
 
