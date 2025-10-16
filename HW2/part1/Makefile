@@ -1,13 +1,14 @@
-CC = gcc
-CFLAGS = -std=gnu11 -Ofast -funroll-loops -flto \
-         -fomit-frame-pointer -fno-asynchronous-unwind-tables -DNDEBUG \
-         -Wall -Wextra -pthread -march=x86-64 -mtune=generic
-LDFLAGS = -pthread
+TARGET := pi
+SRC    := pi.c
 
-all: pi.out
+CFLAGS := -O3 -march=native -flto -fstrict-aliasing -fno-math-errno -fno-trapping-math \
+          -DNDEBUG -Wall -Wextra -Wno-unused-parameter
+LIBS   := -pthread
 
-pi.out: pi.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+all: $(TARGET)
+
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
 
 clean:
-	rm -f pi.out
+	rm -f $(TARGET) *.o

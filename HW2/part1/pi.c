@@ -1,14 +1,16 @@
-// pi.c — Monte Carlo π with Pthreads + super-fast LCG RNG
-// 整數幾何；LCG；unroll×8；cacheline padding；Linux thread affinity
+// pi.c — Monte Carlo π with Pthreads + super-fast LCG RNG (PID seed)
+// 整數幾何；LCG；unroll×8；cacheline padding；無任何條件編譯
+// 建議編譯：-O3 -march=native -flto -pthread
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <pthread.h>
-#include <time.h>
 #include <unistd.h>
+#include <errno.h>
 
-
+// -------- LCG 與 mix64（熱區） -----------------------------------------
 static inline __attribute__((always_inline, hot))
 uint64_t fast_lcg(uint64_t *s) {
     *s = (*s * 6364136223846793005ULL + 1ULL);  // 1 mul + 1 add
@@ -23,6 +25,15 @@ uint64_t mix64(uint64_t z) {
     return z ^ (z >> 31);
 }
 
+// -------- 對齊配置（posix_memalign；更可攜） ---------------------------
+static void* alloc_aligned(size_t alignment, size_t size) {
+    void *p = NULL;
+    int rc = posix_memalign(&p, alignment, size);
+    if (rc != 0) return NULL;
+    return p;
+}
+
+// -------- 任務結構：避免 false sharing ---------------------------------
 typedef struct {
     long long tosses;
     uint64_t  state;
@@ -30,14 +41,16 @@ typedef struct {
     char      pad[64];
 } __attribute__((aligned(64))) Task;
 
+// -------- x^2 + y^2（64-bit） ------------------------------------------
 static inline __attribute__((always_inline, hot))
 uint64_t sqsum64(int32_t x, int32_t y) {
     int64_t X = (int64_t)x, Y = (int64_t)y;
     return (uint64_t)(X*X) + (uint64_t)(Y*Y);
 }
 
+// -------- worker（熱區迴圈：unroll × 8） -------------------------------
 static void* worker(void *arg) {
-    Task *t = (Task*)arg;
+    Task * __restrict t = (Task*)arg;
     long long n = t->tosses;
     long long hits = 0;
     uint64_t st = t->state;
@@ -45,8 +58,8 @@ static void* worker(void *arg) {
     const int64_t  R  = 2147483647LL;                 // 2^31-1
     const uint64_t R2 = (uint64_t)R * (uint64_t)R;
 
-    long long i = 0;
-    for (; i + 7 < n; i += 8) {
+    long long n8 = n >> 3;
+    for (long long k = 0; k < n8; ++k) {
         uint64_t r1 = fast_lcg(&st), r2 = fast_lcg(&st);
         uint64_t r3 = fast_lcg(&st), r4 = fast_lcg(&st);
         uint64_t r5 = fast_lcg(&st), r6 = fast_lcg(&st);
@@ -71,15 +84,16 @@ static void* worker(void *arg) {
         hits += (sqsum64(x8,y8) <= R2);
     }
 
-    for (; i + 1 < n; i += 2) {
+    int rem = (int)(n & 7);
+    while (rem >= 2) {
         uint64_t r1 = fast_lcg(&st), r2 = fast_lcg(&st);
         int32_t x1 = (int32_t)(r1), y1 = (int32_t)(r1 >> 32);
         int32_t x2 = (int32_t)(r2), y2 = (int32_t)(r2 >> 32);
         hits += (sqsum64(x1,y1) <= R2);
         hits += (sqsum64(x2,y2) <= R2);
+        rem -= 2;
     }
-
-    if (i < n) {
+    if (rem == 1) {
         uint64_t r = fast_lcg(&st);
         int32_t x = (int32_t)(r), y = (int32_t)(r >> 32);
         hits += (sqsum64(x,y) <= R2);
@@ -90,8 +104,7 @@ static void* worker(void *arg) {
     return NULL;
 }
 
-
-
+// -------- main ---------------------------------------------------------
 int main(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <num_threads:int> <num_tosses:long long>\n", argv[0]);
@@ -109,16 +122,14 @@ int main(int argc, char **argv) {
 
     size_t need  = sizeof(Task) * (size_t)num_threads;
     size_t bytes = (need + 63) & ~((size_t)63);
-    Task *tasks = (Task*)aligned_alloc(64, bytes);
-    if (!tasks) { perror("aligned_alloc"); return 1; }
+    Task *tasks = (Task*)alloc_aligned(64, bytes);
+    if (!tasks) { perror("posix_memalign"); return 1; }
 
     long long base = num_tosses / num_threads;
     int       rem  = (int)(num_tosses % num_threads);
 
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    // 最省時隨機種子：僅使用 getpid()；每執行緒再混 lane 序避免同種子
     uint64_t base_seed = (uint64_t)getpid();
-
 
     for (int i = 0; i < num_threads; ++i) {
         tasks[i].tosses = base + (i < rem ? 1 : 0);
@@ -131,7 +142,6 @@ int main(int argc, char **argv) {
             perror("pthread_create");
             return 1;
         }
-
     }
 
     long long total_hits = 0;
@@ -144,6 +154,6 @@ int main(int argc, char **argv) {
     free(tasks);
 
     double pi = (num_tosses > 0) ? (4.0 * (double)total_hits / (double)num_tosses) : 0.0;
-    printf("%.6f\n", pi);    
+    printf("%.6f\n", pi);
     return 0;
 }
