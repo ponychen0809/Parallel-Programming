@@ -120,6 +120,6 @@ int main(int argc, char** argv) {
     free(tasks);
 
     double pi = 4.0 * (double)hits / (double)total_tosses;
-    printf("%.6f\n", pi); 
+    printf("%.6f\n", pi); // 只印數字與換行
     return 0;
 }
