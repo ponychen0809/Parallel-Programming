@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Usage: %s <num_threads:int> <num_tosses:long long>\n", argv[0]);
         return 1;
     }
-    int        num_threads = atoi(argv[1])+1;
+    int        num_threads = atoi(argv[1]);
     long long  num_tosses  = atoll(argv[2]);
     if (num_threads <= 0 || num_tosses < 0) {
         fprintf(stderr, "Invalid arguments.\n");
