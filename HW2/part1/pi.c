@@ -135,9 +135,10 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < num_threads; ++i) {
         tasks[i].tosses = base + (i < rem ? 1 : 0);
-        uint64_t si = mix64(base_seed ^ (0x9E3779B97F4A7C15ULL * (uint64_t)(i + 1)));
-        if (si == 0) si = 0x106689D45497FDB5ULL;   // 狀態避免為 0
-        tasks[i].state = si;
+        // uint64_t si = mix64(base_seed ^ (0x9E3779B97F4A7C15ULL * (uint64_t)(i + 1)));
+        // if (si == 0) si = 0x106689D45497FDB5ULL;   // 狀態避免為 0
+        // tasks[i].state = si;
+        tasks[i].state = i + 1123;
         tasks[i].hits  = 0;
 
         if (pthread_create(&ths[i], NULL, worker, &tasks[i]) != 0) {
