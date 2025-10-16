@@ -1,7 +1,3 @@
-// pi.c — Monte Carlo π with Pthreads + super-fast xorshift64 RNG (PID seed)
-// 重點：整數幾何；xorshift64；unroll×8；cacheline padding；無任何條件編譯
-// 建議編譯：-O3 -march=native -flto -pthread
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,12 +9,13 @@
 /* -------- 極速 RNG：xorshift64（無乘法，品質較 LCG 稍差但更快） -------- */
 static inline __attribute__((always_inline, hot))
 uint64_t fast_rng(uint64_t *s) {
-    uint64_t x = *s ? *s : 0x9E3779B97F4A7C15ULL; // 避免 0 狀態
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *s = x;
-    return x;
+    // uint64_t x = *s ? *s : 0x9E3779B97F4A7C15ULL; // 避免 0 狀態
+    // x ^= x << 13;
+    // x ^= x >> 7;
+    // x ^= x << 17;
+    // *s = x;
+    *s = *s +1;
+    return *s;
 }
 
 /* -------- split & mix：讓不同執行緒種子分散 -------- */
