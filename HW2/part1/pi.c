@@ -14,7 +14,7 @@ uint64_t fast_rng(uint64_t *s) {
     // x ^= x >> 7;
     // x ^= x << 17;
     // *s = x;
-    *s = *s +1;
+    *s = *s +112312312312312;
     return *s;
 }
 
