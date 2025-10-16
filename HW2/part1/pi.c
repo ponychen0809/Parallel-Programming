@@ -146,10 +146,10 @@ int main(int argc, char **argv) {
             perror("pthread_create");
             return 1;
         }
-#ifdef __linux__
-        // 綁定到不同 CPU，降低抖動（若系統允許）
-        bind_thread_to_cpu(ths[i], (int)(i % ncpu));
-#endif
+// #ifdef __linux__
+//         // 綁定到不同 CPU，降低抖動（若系統允許）
+//         bind_thread_to_cpu(ths[i], (int)(i % ncpu));
+// #endif
     }
 
     long long total_hits = 0;
