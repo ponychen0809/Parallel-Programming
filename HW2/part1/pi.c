@@ -128,7 +128,7 @@ int main(int argc, char **argv) {
 
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    uint64_t base_seed = ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ ((uint64_t)getpid() << 16);
+    uint64_t base_seed = 10;
 
 #ifdef __linux__
     long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
