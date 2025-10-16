@@ -1,4 +1,4 @@
-TARGET := pi
+TARGET := pi.out
 SRC    := pi.c
 
 CFLAGS := -O3 -march=native -flto -fstrict-aliasing -fno-math-errno -fno-trapping-math \
@@ -11,4 +11,4 @@ $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
 
 clean:
-	rm -f $(TARGET) *.o
+	rm -f $(TARGET) *.out
