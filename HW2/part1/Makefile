@@ -1,13 +1,15 @@
-CC = gcc
-CFLAGS = -std=gnu11 -Ofast -funroll-loops -flto \
-         -fomit-frame-pointer -fno-asynchronous-unwind-tables -DNDEBUG \
-         -Wall -Wextra -pthread -march=x86-64 -mtune=generic
-LDFLAGS = -pthread
+CC      := gcc
+CFLAGS  := -O3 -march=native -mtune=native -Wall -Wextra -pthread
+LDFLAGS := -pthread
+TARGET  := pi.out
+SRC     := pi.c
 
-all: pi.out
+all: $(TARGET)
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-pi.out: pi.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+run: $(TARGET)
+	@./$(TARGET) 6 100000000
 
 clean:
-	rm -f pi.out
+	$(RM) $(TARGET)
