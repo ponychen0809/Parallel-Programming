@@ -1,4 +1,4 @@
-TARGET := pi.out
+TARGET := pi
 SRC    := pi.c
 
 CFLAGS := -O3 -march=native -flto -fstrict-aliasing -fno-math-errno -fno-trapping-math \
