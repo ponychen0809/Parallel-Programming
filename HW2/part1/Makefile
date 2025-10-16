@@ -8,7 +8,7 @@ LIBS   := -pthread
 all: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
+	$(CC) $(CFLAGS) -o pi.out $< $(LIBS)
 
 clean:
 	rm -f $(TARGET) *.out
