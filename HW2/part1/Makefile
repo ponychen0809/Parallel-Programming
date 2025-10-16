@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -std=gnu11 -Ofast -funroll-loops -flto \
          -fomit-frame-pointer -fno-asynchronous-unwind-tables -DNDEBUG \
-         -Wall -Wextra -pthread -march=x86-64 -mtune=generic
+         -Wall -Wextra -pthread -march=x86-64-v3 -mtune=skylake
 LDFLAGS = -pthread
 
 all: pi.out
