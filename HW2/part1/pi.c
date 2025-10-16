@@ -7,9 +7,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
-#ifdef __linux__
-#include <sched.h>   // pthread_setaffinity_np
-#endif
+
 
 static inline __attribute__((always_inline, hot))
 uint64_t fast_lcg(uint64_t *s) {
@@ -92,16 +90,6 @@ static void* worker(void *arg) {
     return NULL;
 }
 
-#ifdef __linux__
-// 將 pthread 綁定到某個 CPU（第 cpu_id 個）
-static inline void bind_thread_to_cpu(pthread_t th, int cpu_id) {
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(cpu_id, &cpuset);
-    // 忽略錯誤即可（在部分容器/系統上可能無法設置）
-    pthread_setaffinity_np(th, sizeof(cpu_set_t), &cpuset);
-}
-#endif
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -126,14 +114,10 @@ int main(int argc, char **argv) {
     long long base = num_tosses / num_threads;
     int       rem  = (int)(num_tosses % num_threads);
 
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    uint64_t base_seed = ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ ((uint64_t)getpid() << 16);
-
-#ifdef __linux__
-    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-    if (ncpu < 1) ncpu = 1;
-#endif
+    // struct timespec ts;
+    // clock_gettime(CLOCK_REALTIME, &ts);
+    // uint64_t base_seed = ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ ((uint64_t)getpid() << 16);
+    uint64_t base_seed = getpid();
 
     for (int i = 0; i < num_threads; ++i) {
         tasks[i].tosses = base + (i < rem ? 1 : 0);
@@ -146,10 +130,6 @@ int main(int argc, char **argv) {
             perror("pthread_create");
             return 1;
         }
-#ifdef __linux__
-        // 綁定到不同 CPU，降低抖動（若系統允許）
-        bind_thread_to_cpu(ths[i], (int)(i % ncpu));
-#endif
     }
 
     long long total_hits = 0;
