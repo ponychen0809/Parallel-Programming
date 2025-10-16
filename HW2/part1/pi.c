@@ -1,23 +1,22 @@
+// pi.c — Monte Carlo π with Pthreads + super-fast LCG RNG
+// 整數幾何；LCG；unroll×8；cacheline padding；Linux thread affinity
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <time.h>
 #include <unistd.h>
-#include <errno.h>
+#ifdef __linux__
+#include <sched.h>   // pthread_setaffinity_np
+#endif
 
-/* -------- 極速 RNG：xorshift64（無乘法，品質較 LCG 稍差但更快） -------- */
 static inline __attribute__((always_inline, hot))
-uint64_t fast_rng(uint64_t *s) {
-    uint64_t x = *s; // 避免 0 狀態
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *s = x;
+uint64_t fast_lcg(uint64_t *s) {
+    *s = (*s * 6364136223846793005ULL + 1ULL);  // 1 mul + 1 add
     return *s;
 }
 
-/* -------- split & mix：讓不同執行緒種子分散 -------- */
 static inline __attribute__((always_inline, hot))
 uint64_t mix64(uint64_t z) {
     z += 0x9E3779B97F4A7C15ULL;
@@ -25,15 +24,7 @@ uint64_t mix64(uint64_t z) {
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
     return z ^ (z >> 31);
 }
-/* -------- 對齊配置（posix_memalign） -------- */
-static void* alloc_aligned(size_t alignment, size_t size) {
-    void *p = NULL;
-    int rc = posix_memalign(&p, alignment, size);
-    if (rc != 0) return NULL;
-    return p;
-}
 
-/* -------- 任務結構：避免 false sharing -------- */
 typedef struct {
     long long tosses;
     uint64_t  state;
@@ -41,16 +32,14 @@ typedef struct {
     char      pad[64];
 } __attribute__((aligned(64))) Task;
 
-/* -------- x^2 + y^2（64-bit） -------- */
 static inline __attribute__((always_inline, hot))
 uint64_t sqsum64(int32_t x, int32_t y) {
     int64_t X = (int64_t)x, Y = (int64_t)y;
     return (uint64_t)(X*X) + (uint64_t)(Y*Y);
 }
 
-/* -------- worker：unroll × 8 -------- */
 static void* worker(void *arg) {
-    Task * __restrict t = (Task*)arg;
+    Task *t = (Task*)arg;
     long long n = t->tosses;
     long long hits = 0;
     uint64_t st = t->state;
@@ -58,12 +47,12 @@ static void* worker(void *arg) {
     const int64_t  R  = 2147483647LL;                 // 2^31-1
     const uint64_t R2 = (uint64_t)R * (uint64_t)R;
 
-    long long n8 = n >> 3;
-    for (long long k = 0; k < n8; ++k) {
-        uint64_t r1 = fast_rng(&st), r2 = fast_rng(&st);
-        uint64_t r3 = fast_rng(&st), r4 = fast_rng(&st);
-        uint64_t r5 = fast_rng(&st), r6 = fast_rng(&st);
-        uint64_t r7 = fast_rng(&st), r8 = fast_rng(&st);
+    long long i = 0;
+    for (; i + 7 < n; i += 8) {
+        uint64_t r1 = fast_lcg(&st), r2 = fast_lcg(&st);
+        uint64_t r3 = fast_lcg(&st), r4 = fast_lcg(&st);
+        uint64_t r5 = fast_lcg(&st), r6 = fast_lcg(&st);
+        uint64_t r7 = fast_lcg(&st), r8 = fast_lcg(&st);
 
         int32_t x1 = (int32_t)(r1), y1 = (int32_t)(r1 >> 32);
         int32_t x2 = (int32_t)(r2), y2 = (int32_t)(r2 >> 32);
@@ -84,17 +73,16 @@ static void* worker(void *arg) {
         hits += (sqsum64(x8,y8) <= R2);
     }
 
-    int rem = (int)(n & 7);
-    while (rem >= 2) {
-        uint64_t r1 = fast_rng(&st), r2 = fast_rng(&st);
+    for (; i + 1 < n; i += 2) {
+        uint64_t r1 = fast_lcg(&st), r2 = fast_lcg(&st);
         int32_t x1 = (int32_t)(r1), y1 = (int32_t)(r1 >> 32);
         int32_t x2 = (int32_t)(r2), y2 = (int32_t)(r2 >> 32);
         hits += (sqsum64(x1,y1) <= R2);
         hits += (sqsum64(x2,y2) <= R2);
-        rem -= 2;
     }
-    if (rem == 1) {
-        uint64_t r = fast_rng(&st);
+
+    if (i < n) {
+        uint64_t r = fast_lcg(&st);
         int32_t x = (int32_t)(r), y = (int32_t)(r >> 32);
         hits += (sqsum64(x,y) <= R2);
     }
@@ -104,7 +92,17 @@ static void* worker(void *arg) {
     return NULL;
 }
 
-/* -------- main -------- */
+#ifdef __linux__
+// 將 pthread 綁定到某個 CPU（第 cpu_id 個）
+static inline void bind_thread_to_cpu(pthread_t th, int cpu_id) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(cpu_id, &cpuset);
+    // 忽略錯誤即可（在部分容器/系統上可能無法設置）
+    pthread_setaffinity_np(th, sizeof(cpu_set_t), &cpuset);
+}
+#endif
+
 int main(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <num_threads:int> <num_tosses:long long>\n", argv[0]);
@@ -122,19 +120,25 @@ int main(int argc, char **argv) {
 
     size_t need  = sizeof(Task) * (size_t)num_threads;
     size_t bytes = (need + 63) & ~((size_t)63);
-    Task *tasks = (Task*)alloc_aligned(64, bytes);
-    if (!tasks) { perror("posix_memalign"); return 1; }
+    Task *tasks = (Task*)aligned_alloc(64, bytes);
+    if (!tasks) { perror("aligned_alloc"); return 1; }
 
     long long base = num_tosses / num_threads;
     int       rem  = (int)(num_tosses % num_threads);
 
-    // 最省時：僅用 PID 當基礎種子；每執行緒經 mix 做 decorrelate
-    uint64_t base_seed = (uint64_t)getpid();
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    uint64_t base_seed = ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ ((uint64_t)getpid() << 16);
+
+#ifdef __linux__
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    if (ncpu < 1) ncpu = 1;
+#endif
 
     for (int i = 0; i < num_threads; ++i) {
         tasks[i].tosses = base + (i < rem ? 1 : 0);
         uint64_t si = mix64(base_seed ^ (0x9E3779B97F4A7C15ULL * (uint64_t)(i + 1)));
-        if (si == 0) si = 0x106689D45497FDB5ULL;   // 狀態避免為 0
+        if (si == 0) si = 0x106689D45497FDB5ULL;   // LCG 狀態不可為 0
         tasks[i].state = si;
         tasks[i].hits  = 0;
 
@@ -142,6 +146,10 @@ int main(int argc, char **argv) {
             perror("pthread_create");
             return 1;
         }
+#ifdef __linux__
+        // 綁定到不同 CPU，降低抖動（若系統允許）
+        bind_thread_to_cpu(ths[i], (int)(i % ncpu));
+#endif
     }
 
     long long total_hits = 0;
@@ -154,6 +162,6 @@ int main(int argc, char **argv) {
     free(tasks);
 
     double pi = (num_tosses > 0) ? (4.0 * (double)total_hits / (double)num_tosses) : 0.0;
-    printf("%.6f\n", pi);
+    printf("%.6f\n", pi);    
     return 0;
 }

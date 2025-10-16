@@ -1,15 +1,13 @@
-# single portable build
-TARGET := pi.out
-SRC    := pi.c
+CC = gcc
+CFLAGS = -std=gnu11 -Ofast -funroll-loops -flto \
+         -fomit-frame-pointer -fno-asynchronous-unwind-tables -DNDEBUG \
+         -Wall -Wextra -pthread -march=x86-64 -mtune=generic
+LDFLAGS = -pthread
 
-CFLAGS := -O3 -march=x86-64 -mtune=generic \
-          -mno-avx -mno-avx2 -mno-fma \
-          -fstrict-aliasing -fno-math-errno -fno-trapping-math \
-          -DNDEBUG -Wall -Wextra -Wno-unused-parameter
-LIBS   := -pthread
+all: pi.out
 
-all: $(TARGET)
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
+pi.out: pi.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
 clean:
-	rm -f $(TARGET) *.o
+	rm -f pi.out
