@@ -1,5 +1,4 @@
-// pi.c — Monte Carlo π with Pthreads + super-fast LCG RNG
-// 整數幾何；LCG；unroll×8；cacheline padding；Linux thread affinity
+// pi.c — Monte Carlo π with Pthreads, fast 64-bit LCG, unroll×8, padding
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,13 +6,10 @@
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
-#ifdef __linux__
-#include <sched.h>   // pthread_setaffinity_np
-#endif
 
 static inline __attribute__((always_inline, hot))
 uint64_t fast_lcg(uint64_t *s) {
-    *s = (*s * 6364136223846793005ULL + 1ULL);  // 1 mul + 1 add
+    *s = (*s * 6364136223846793005ULL + 1ULL);
     return *s;
 }
 
@@ -29,23 +25,23 @@ typedef struct {
     long long tosses;
     uint64_t  state;
     long long hits;
-    char      pad[64];
+    char      pad[64];              // 避免 false sharing
 } __attribute__((aligned(64))) Task;
 
 static inline __attribute__((always_inline, hot))
 uint64_t sqsum64(int32_t x, int32_t y) {
-    int64_t X = (int64_t)x, Y = (int64_t)y;
+    int64_t X = x, Y = y;
     return (uint64_t)(X*X) + (uint64_t)(Y*Y);
 }
 
 static void* worker(void *arg) {
     Task *t = (Task*)arg;
     long long n = t->tosses;
+    uint64_t  st = t->state;
     long long hits = 0;
-    uint64_t st = t->state;
 
-    const int64_t  R  = 2147483647LL;                 // 2^31-1
-    const uint64_t R2 = (uint64_t)R * (uint64_t)R;
+    static const int64_t  R  = 2147483647LL;              // 2^31 - 1
+    static const uint64_t R2 = (uint64_t)R * (uint64_t)R;
 
     long long i = 0;
     for (; i + 7 < n; i += 8) {
@@ -54,14 +50,14 @@ static void* worker(void *arg) {
         uint64_t r5 = fast_lcg(&st), r6 = fast_lcg(&st);
         uint64_t r7 = fast_lcg(&st), r8 = fast_lcg(&st);
 
-        int32_t x1 = (int32_t)(r1), y1 = (int32_t)(r1 >> 32);
-        int32_t x2 = (int32_t)(r2), y2 = (int32_t)(r2 >> 32);
-        int32_t x3 = (int32_t)(r3), y3 = (int32_t)(r3 >> 32);
-        int32_t x4 = (int32_t)(r4), y4 = (int32_t)(r4 >> 32);
-        int32_t x5 = (int32_t)(r5), y5 = (int32_t)(r5 >> 32);
-        int32_t x6 = (int32_t)(r6), y6 = (int32_t)(r6 >> 32);
-        int32_t x7 = (int32_t)(r7), y7 = (int32_t)(r7 >> 32);
-        int32_t x8 = (int32_t)(r8), y8 = (int32_t)(r8 >> 32);
+        int32_t x1 = (int32_t) r1, y1 = (int32_t)(r1 >> 32);
+        int32_t x2 = (int32_t) r2, y2 = (int32_t)(r2 >> 32);
+        int32_t x3 = (int32_t) r3, y3 = (int32_t)(r3 >> 32);
+        int32_t x4 = (int32_t) r4, y4 = (int32_t)(r4 >> 32);
+        int32_t x5 = (int32_t) r5, y5 = (int32_t)(r5 >> 32);
+        int32_t x6 = (int32_t) r6, y6 = (int32_t)(r6 >> 32);
+        int32_t x7 = (int32_t) r7, y7 = (int32_t)(r7 >> 32);
+        int32_t x8 = (int32_t) r8, y8 = (int32_t)(r8 >> 32);
 
         hits += (sqsum64(x1,y1) <= R2);
         hits += (sqsum64(x2,y2) <= R2);
@@ -73,35 +69,22 @@ static void* worker(void *arg) {
         hits += (sqsum64(x8,y8) <= R2);
     }
 
-    for (; i + 1 < n; i += 2) {
-        uint64_t r1 = fast_lcg(&st), r2 = fast_lcg(&st);
-        int32_t x1 = (int32_t)(r1), y1 = (int32_t)(r1 >> 32);
-        int32_t x2 = (int32_t)(r2), y2 = (int32_t)(r2 >> 32);
-        hits += (sqsum64(x1,y1) <= R2);
-        hits += (sqsum64(x2,y2) <= R2);
-    }
-
-    if (i < n) {
-        uint64_t r = fast_lcg(&st);
-        int32_t x = (int32_t)(r), y = (int32_t)(r >> 32);
-        hits += (sqsum64(x,y) <= R2);
+    // 處理尾巴（0..7 個樣本），減少分支
+    switch ((int)(n - i)) {
+        case 7: { uint64_t r = fast_lcg(&st); hits += (sqsum64((int32_t)r, (int32_t)(r>>32)) <= R2); }
+        case 6: { uint64_t r = fast_lcg(&st); hits += (sqsum64((int32_t)r, (int32_t)(r>>32)) <= R2); }
+        case 5: { uint64_t r = fast_lcg(&st); hits += (sqsum64((int32_t)r, (int32_t)(r>>32)) <= R2); }
+        case 4: { uint64_t r = fast_lcg(&st); hits += (sqsum64((int32_t)r, (int32_t)(r>>32)) <= R2); }
+        case 3: { uint64_t r = fast_lcg(&st); hits += (sqsum64((int32_t)r, (int32_t)(r>>32)) <= R2); }
+        case 2: { uint64_t r = fast_lcg(&st); hits += (sqsum64((int32_t)r, (int32_t)(r>>32)) <= R2); }
+        case 1: { uint64_t r = fast_lcg(&st); hits += (sqsum64((int32_t)r, (int32_t)(r>>32)) <= R2); }
+        default: break;
     }
 
     t->state = st;
     t->hits  = hits;
     return NULL;
 }
-
-// #ifdef __linux__
-// // 將 pthread 綁定到某個 CPU（第 cpu_id 個）
-// static inline void bind_thread_to_cpu(pthread_t th, int cpu_id) {
-//     cpu_set_t cpuset;
-//     CPU_ZERO(&cpuset);
-//     CPU_SET(cpu_id, &cpuset);
-//     // 忽略錯誤即可（在部分容器/系統上可能無法設置）
-//     pthread_setaffinity_np(th, sizeof(cpu_set_t), &cpuset);
-// }
-// #endif
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -118,9 +101,8 @@ int main(int argc, char **argv) {
     pthread_t *ths = (pthread_t*)malloc(sizeof(pthread_t) * (size_t)num_threads);
     if (!ths) { perror("alloc ths"); return 1; }
 
-    size_t need  = sizeof(Task) * (size_t)num_threads;
-    size_t bytes = (need + 63) & ~((size_t)63);
-    Task *tasks = (Task*)aligned_alloc(64, bytes);
+    size_t bytes = sizeof(Task) * (size_t)num_threads;
+    Task *tasks = (Task*)aligned_alloc(64, (bytes + 63) & ~((size_t)63));
     if (!tasks) { perror("aligned_alloc"); return 1; }
 
     long long base = num_tosses / num_threads;
@@ -129,11 +111,6 @@ int main(int argc, char **argv) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     uint64_t base_seed = ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ ((uint64_t)getpid() << 16);
-
-// #ifdef __linux__
-//     long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-//     if (ncpu < 1) ncpu = 1;
-// #endif
 
     for (int i = 0; i < num_threads; ++i) {
         tasks[i].tosses = base + (i < rem ? 1 : 0);
@@ -146,10 +123,6 @@ int main(int argc, char **argv) {
             perror("pthread_create");
             return 1;
         }
-// #ifdef __linux__
-//         // 綁定到不同 CPU，降低抖動（若系統允許）
-//         bind_thread_to_cpu(ths[i], (int)(i % ncpu));
-// #endif
     }
 
     long long total_hits = 0;
@@ -162,6 +135,6 @@ int main(int argc, char **argv) {
     free(tasks);
 
     double pi = (num_tosses > 0) ? (4.0 * (double)total_hits / (double)num_tosses) : 0.0;
-    printf("%.6f\n", pi);    
+    printf("%.6f\n", pi);
     return 0;
 }

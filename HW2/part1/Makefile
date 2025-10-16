@@ -5,9 +5,7 @@ CFLAGS = -std=gnu11 -Ofast -funroll-loops -flto \
 LDFLAGS = -pthread
 
 all: pi.out
-
 pi.out: pi.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
-
 clean:
 	rm -f pi.out
